@@ -8,6 +8,7 @@ No more three implementations of the same math.
 import numpy as np
 import math
 from typing import Tuple, List, Optional
+from .health import coupling_entropy, algebraic_normalized, timing_stability, FleetHealthMetric
 
 PHI = (1 + math.sqrt(5)) / 2  # golden ratio
 
