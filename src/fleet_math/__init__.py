@@ -121,6 +121,11 @@ class CouplingAnalysis:
             return f"mixed (r={mean_r:.3f})"
 
 
+# ── Coupling Type System ────────────────────────────
+
+from .types import TypeAwareHealthMetric, estimate_type, BASELINES
+
+
 # ── JEPA Loss Functions ────────────────────────────
 
 def vicreg_loss(y_pred: np.ndarray, y_target: np.ndarray,
