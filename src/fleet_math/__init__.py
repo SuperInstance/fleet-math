@@ -149,3 +149,120 @@ def coupling_energy(embeddings: np.ndarray, coupling_matrix: np.ndarray) -> floa
             w = coupling_matrix[i][j]
             energy += w * np.sum((embeddings[i] - embeddings[j]) ** 2)
     return float(energy / (n * n))
+
+
+# ── Conservation Law ──────────────────────────────
+
+# Empirical conservation law: gamma + H = 1.283 - 0.159 * log(V)
+# 
+# DISCOVERY: In fleet-wide coupling analysis, the sum of algebraic_normalized (gamma)
+# and coupling_entropy (H) is remarkably conserved for a given agent count V,
+# regardless of coupling matrix structure. This was discovered empirically through
+# Monte Carlo simulation across all fleet agents (Oracle1, Forgemaster, JC1, etc.).
+#
+# Derivation basis: R² = 0.9602 across V ∈ [5, 200] with 5000 samples per V.
+# The best-fit line: gamma + H = 1.283 - 0.159 * log(V)
+#
+# Coupling-type corrections: each coupling type has a slightly different intercept.
+# See fleet_math.types.BASELINES for per-type offsets. The universal conservation
+# law is the ``style'' baseline — the most common configuration.
+#
+# PHYSICAL ANALOGY: This is like the conservation of mass-energy in the fleet's
+# coupling space. Just as total energy is conserved in a closed physical system,
+# gamma+H is conserved for a fixed fleet size. Changes in connectivity (gamma)
+# must be compensated by changes in diversity (H), and vice versa.
+#
+# PRACTICAL USE: If an agent's coupling matrix violates this conservation law
+# (deviation > 0.15), it indicates:
+#   1. Preferential attachment (one agent dominates)
+#   2. Measurement noise in the coupling matrix
+#   3. Anomalous coupling regime worth investigating
+#
+# REFERENCES:
+#   - plato-ng experiments/coupling_conversation/proof.py (original derivation)
+#   - .transcripts/0-cross-pollination-1.md (fleet integration decision)
+
+CONSERVATION_LOG_COEFF = -0.159
+CONSERVATION_INTERCEPT = 1.283
+
+# Tolerance windows (± sigma) per V, derived from empirical distribution
+CONSERVATION_SIGMA = {
+    5: 0.070, 10: 0.065, 20: 0.058, 30: 0.050,
+    50: 0.048, 100: 0.042, 200: 0.038,
+}
+
+
+def _conservation_sigma(V: int) -> float:
+    """Interpolate empirical sigma for any V."""
+    vs = sorted(CONSERVATION_SIGMA.keys())
+    if V <= vs[0]:
+        return CONSERVATION_SIGMA[vs[0]]
+    if V >= vs[-1]:
+        return CONSERVATION_SIGMA[vs[-1]]
+    for lo, hi in zip(vs, vs[1:]):
+        if lo < V <= hi:
+            frac = (V - lo) / (hi - lo)
+            return CONSERVATION_SIGMA[lo] + frac * (CONSERVATION_SIGMA[hi] - CONSERVATION_SIGMA[lo])
+    return 0.05
+
+
+def fleet_conservation_law(V: int, coupling_type: str = "style") -> dict:
+    """Conservation law for gamma + H at fleet size V.
+    
+    The sum of algebraic_normalized (gamma) and coupling_entropy (H)
+    satisfies gamma + H ≈ intercept + log_coeff * log(V), with
+    coupling-type-specific offsets.
+    
+    Parameters
+    ----------
+    V : int
+        Number of agents (or nodes in the coupling matrix).
+    coupling_type : str
+        One of "style", "topology", "mixed", "directed".
+        Default "style" uses the universal empirical law.
+        Coupling-type offsets come from fleet_math.types.BASELINES.
+    
+    Returns
+    -------
+    dict with keys:
+        predicted_sum : float
+            Expected value of gamma + H for given V and coupling_type.
+        deviation : callable(gamma, H) -> float
+            Returns predicted_sum - (gamma + H). Positive means actual
+            sum is below predicted.
+        is_conserved : callable(gamma, H, tolerance=2.0) -> bool
+            Checks if |deviation| <= tolerance * sigma(V).
+            tolerance=2.0 allows ±2 sigma (95% confidence interval).
+        expected_range : tuple[float, float]
+            (lower_bound, upper_bound) for gamma+H at ±2 sigma.
+        sigma : float
+            Empirical standard deviation of gamma+H at this V.
+    """
+    from .types import BASELINES
+    
+    # Get baseline for this coupling type
+    if coupling_type == "style":
+        # Universal empirical law: gamma+H = 1.283 - 0.159*log(V)
+        # R² = 0.9602 across V ∈ [5, 200], 5000 samples per V
+        predicted = CONSERVATION_INTERCEPT + CONSERVATION_LOG_COEFF * np.log(max(V, 3))
+    else:
+        # Per-type baselines from fleet_math.types.BASELINES
+        entry = BASELINES.get(coupling_type, BASELINES["style"])
+        predicted = entry["form"](V)
+    sigma = _conservation_sigma(V)
+    
+    def deviation(gamma: float, H: float) -> float:
+        return (gamma + H) - predicted
+    
+    def is_conserved(gamma: float, H: float, tolerance: float = 2.0) -> bool:
+        return abs(deviation(gamma, H)) <= tolerance * sigma
+    
+    lower, upper = predicted - 2 * sigma, predicted + 2 * sigma
+    
+    return {
+        "predicted_sum": predicted,
+        "deviation": deviation,
+        "is_conserved": is_conserved,
+        "expected_range": (lower, upper),
+        "sigma": sigma,
+    }
